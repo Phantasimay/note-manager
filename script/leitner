@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+
+# Simple leitner system for terminal
+# Daily QnA directory
+
+# General Option
+# EDITOR=
+DECK="$WIKI_DIR/deck"
+MERGE=true
+TMX=true
+app="$(basename "$0")"
+
+# Usage options
+usage(){
+    echo "Usage: "$app" [options]"
+    echo ""
+    echo "Options:"
+    echo "    -d[elete]   Delete all quiz data"
+    echo "    -h[elp]	Open this manual"
+    echo "    -r[eset]	Reset quiz data"
+    echo "    -t[est]	Run with cat (for dbuging)"
+    echo ""
+}
+
+# Subcommand
+subcmd(){
+  case "$i" in
+    -d|-delete)
+	rm -rf "$DECK"
+	exit
+      ;;
+    -h|-help)
+        usage
+	exit
+      ;;
+    -r|-reset)
+	cat /dev/null >| "$DECK/init"
+	for i in "${!FLASH[@]}"; do
+	    rm -rf "${FLASH[$i]}"
+	done
+	exit
+      ;;
+    -t|-test)
+        TMX=false
+        shift
+      ;;
+    *)
+        echo "Error: '$i' is not a known option." >&2
+        echo "       Run '$app -h' for a list of options." >&2
+        exit 1
+      ;;
+  esac
+}
+
+# Cards generator
+cards(){
+FLASH=()
+for i in ${!ETIME[@]}; do
+    FLASH+=("$DECK/${ETIME[$i]}.md")
+    touch "$DECK/${ETIME[$i]}.md"
+done
+}
+
+# Array generator
+generate(){
+    if [[ $TIME -gt 1 ]];then
+	readonly c=1.25 2>/dev/null
+	readonly k=1.84 2>/dev/null
+	readonly b=75 2>/dev/null
+	readonly e=2.7182818284 2>/dev/null
+	logt=$(echo "(100*$k/$b)-$k"|bc -l)
+	uber=$(echo "e(l($logt)*(1/$c))"|bc -l)
+	t=$(echo "e(l(10)*$uber)"|bc -l)
+	r=$(echo "e(l($e)*-($t/($TIME*24*60)))"|bc -l)
+	TIME=$(echo "2*$TIME+($r*24*60)/($t*100)"|bc -l|cut -f1 -d".")
+    else
+	((TIME++))
+    fi
+    ETIME+=($TIME)
+}
+
+# Check availability setup in $DECK/init
+initcheck(){
+    if [[ -s "$DECK/init" ]]; then
+	while read -r line; do
+	    if [[ $line =~ ^# ]]; then
+		TIME=$(echo "${line##\# }")
+		continue
+	    fi
+	    if [[ ! $line =~ ^# ]]; then
+		ETIME=($(echo "$line"))
+		continue
+	    fi
+	done < "$DECK/init"
+    else
+	if [[ ! -a "$DECK/init" ]]; then
+	    mkdir -p "$DECK"
+	    touch "$DECK/init"
+	fi
+	TIME=$(date -u '+%Y%m%d')
+	ETIME=($(($TIME-$(date -u '+%Y%m%d'))))
+    fi
+    OTIMR=$TIME
+    if [[ $TIME != $(date -u '+%Y%m%d') ]]; then
+	TIME=$(($TIME-$(date -u '+%Y%m%d')))
+    else
+	TIME=$ETIME
+	generate
+    fi
+    cards
+}
+
+# shifter array
+shifer(){
+	# Reverse Estimate time
+	f() { ETIME=("${BASH_ARGV[@]}"); }
+	shopt -s extdebug
+	f "${ETIME[@]}"
+	shopt -u extdebug
+}
+
+# Initialization existing question
+init(){
+	shifer
+	# Init card factor
+	CARD=${#FLASH[@]}
+	for i in "${ETIME[@]}"; do
+		((CARD--))
+		if [[ "$(($TIME%"$i"))" -eq 0 ]]; then
+			break
+		fi
+	done
+	CARD=$(("${#FLASH[@]}"-"$CARD"))
+	CARDS=${FLASH[@]:1:$((${#FLASH[@]}-$CARD))}
+
+	# Compile cards
+	cat $CARDS > "${FLASH[0]}"
+	if [[ "$CARDS" = "${FLASH[@]:1}" ]]; then
+		shifer
+		generate
+		cards
+	elif [[ "$CARDS" = "${FLASH[@]:1:1}" ]]; then
+		MERGE=false
+	elif [[ $(wc -c < "${FLASH[0]}") -eq 0 ]]; then
+		cat ${FLASH[$((${#FLASH[@]}-$CARD+1))]} > "${FLASH[0]}"
+	fi
+
+	# Cleanup duplicate line
+	if [[ -s "$DECK/init" ]]; then
+	    awk -i inplace '!seen[$0]++' "${FLASH[0]}" && echo "" >> "${FLASH[0]}" && sed -i "1i Delete wrong answer\n" "${FLASH[0]}"
+	else
+	    awk -i inplace '!seen[$0]++' "${FLASH[0]}" && echo "" >> "${FLASH[0]}" && sed -i "1i Initializing...\nPlease close and open again" "${FLASH[0]}"
+	fi
+}
+
+# Quize matching
+crawler(){
+	while read -r line; do
+		if [[ $line =~ ^\[.*\]\(.*\)$ ]]; then
+			if [[ "$(grep -c "${line##\[-}" $1)" -gt 0 ]]; then
+				echo "$line" >> "$2"
+			fi
+		fi
+	done < "${FLASH[0]}"
+	awk -i inplace '!seen[$0]++' "$2"
+	cat /dev/null >| "$1"
+}
+
+# Rearranging quiz
+postman(){
+	CN=$(($CARD))
+	while [[ $CN -gt 0 ]]; do
+	 	CB=$(($CN+1))
+		crawler ${FLASH[$CN]} ${FLASH[$CB]}
+		((CN--))
+	done
+}
+
+# Collecting quiz from note
+collect(){
+	cat /dev/null >| "${FLASH[1]}"
+	cat ${FLASH[@]:2} > "${FLASH[0]}"
+	# Check if starter question clear
+	MDFILE=$(find $WIKI_DIR/*\.md -maxdepth 1 -type f | wc -l)
+	COUNTER=1
+	while [[ $COUNTER -lt $(($MDFILE+1)) ]]; do
+		LEITNER=$(find $WIKI_DIR/*\.md -maxdepth 1 -type f | head -"$COUNTER" | tail +"$COUNTER")
+		while read -r line; do
+			if [[ $line =~ ^-\ .*\?$ ]]; then
+				if [[ "$(grep -c "${line##\-}" ${FLASH[0]})" -eq 0 ]]; then
+					echo "[$line]($LEITNER)" >> "${FLASH[1]}"
+				fi
+				continue
+			fi
+		done < "$LEITNER"
+		((COUNTER++))
+	done
+
+	# Cleanup duplicate line
+	awk -i inplace '!seen[$0]++' "${FLASH[1]}"
+
+	# Cleanup flashcard history
+	cat /dev/null >| "${FLASH[0]}"
+}
+
+# Display type
+disp(){
+if $TMX; then
+    $EDITOR $FLASH
+else
+    cat $FLASH
+fi
+}
+
+# Save setup to $DECK/init
+saving(){
+    TIME=$OTIMR
+    echo "# $TIME" > "$DECK/init"
+    echo ${ETIME[@]} >> "$DECK/init"
+}
+
+# Lets run it:
+initcheck
+for i in "$@"; do
+    subcmd
+done
+init && disp
+postman && collect &
+saving
+wait

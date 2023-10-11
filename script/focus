@@ -1,0 +1,194 @@
+#!/bin/bash
+
+# Terminal pomodoro for linux
+# https://gist.github.com/leo-pfeiffer/3e19a8c2c4f6f91f9b17b9f6bc8e0328
+
+# set -eu
+
+# sourceable pomodoro command
+
+# print help
+echo_help() {
+   # Display help
+   echo "Pomodoro timer for the terminal."
+   echo
+   echo "Syntax: pomodoro [ OPTIONS ]"
+   echo "options:"
+   echo "   -n or --note"
+   echo "       show custome notifications"
+   echo "   -s or --short-break [INTEGER]"
+   echo "       length of short breaks in seconds"
+   echo "   -l or --long-break [INTEGER]"
+   echo "       length of long breaks in seconds"
+   echo "   -w or --work [INTEGER]"
+   echo "       length of work interval in seconds"
+   echo "   -v or --verbose"
+   echo "       show terminal notifications"
+   echo "   -q or --quiet"
+   echo "       do not show notifications"
+   echo "   -h or --help"
+   echo "       print help and exit"
+   echo
+}
+
+# Default arguments
+WORK=$((45*60))       # 60 s =1 mins
+SHORT_BREAK=0
+LONG_BREAK=0
+NOTE=""
+QUIET=false
+VERBOSE=false
+
+beep(){
+  for i in {1..3}; do
+    { ffplay -i "$XDG_CONFIG_HOME/mpv/roster.wav" -autoexit -nodisp & } &>/dev/null
+    wait
+  done
+}
+
+# Parse arguments
+for i in "$@"; do
+  case $i in
+    -n|--note)
+      if [[ $2 =~ ^.*$ ]]
+      then
+        NOTE="$2"
+        shift # past argument
+        shift # past value
+      else
+        echo_help
+        exit;
+      fi
+      ;;
+    -h|--help)
+      echo_help
+      exit;
+      ;;
+    -l|--long-break)
+      if [[ $2 =~ ^-?[0-9]+$ ]]
+      then
+        LONG_BREAK="$(($2*60))"
+        shift # past argument
+        shift # past value
+      else
+        echo_help
+        exit;
+      fi
+      ;;
+    -s|--short-break)
+      if [[ $2 =~ ^-?[0-9]+$ ]]
+      then
+        SHORT_BREAK="$(($2*60))"
+        shift # past argument
+        shift # past value
+      else
+        echo_help
+        exit;
+      fi
+      ;;
+    -v|--verbose)
+      VERBOSE=true
+      shift # past argument
+      ;;
+    -w|--work)
+      if [[ $2 =~ ^-?[0-9]+$ ]]
+      then
+        WORK="$(($2*60))"
+        shift # past argument
+        shift # past value
+      else
+        echo_help
+        exit;
+      fi
+      ;;
+    -q|--quiet)
+      QUIET=true
+      shift # past argument
+      ;;
+    -*|--*)
+      echo "Unknown option $1"
+      echo_help
+      exit;
+      ;;
+  esac
+done
+
+# convert notifications to h:m:s format
+convert_secs() {
+    secs=${1}
+    printf "%dh:%dm:%ds" $((secs/3600)) $((secs%3600/60)) $((secs%60))
+}
+
+# start a countdown for x seconds
+countdown() {
+  secs=$1
+  shift
+  msg=$@
+  swaync-client -df
+  while [ $secs -gt 0 ]
+  do
+    t=$(convert_secs $secs)
+    if $VERBOSE; then
+      printf "\r\033[K$msg $t"
+    fi
+    ((secs--))
+    swaync-client -dn
+    sleep 1
+  done
+  echo
+}
+
+# show notification
+notify() {
+    msg=$1
+    secs=$2
+    time=$(convert_secs $secs)
+    etime=$2
+    notify-send --urgency=critical --expire-time=$etime --icon=alarm-symbolic "$msg" "$time"
+}
+
+# single step pomodoro step (work / break interval)
+pomodoro_step() {
+  if ! $QUIET; then
+    notify "$1" $2
+  fi
+  countdown $2 "$1"
+}
+
+# main pomodoro loop (infinite)
+pomodoro_loop() {
+    counter=1
+    if $VERBOSE; then
+      echo "Pomodoro Timer ==="
+      echo "Work: $(("$WORK"/60)) min"
+      echo "Short break: $(($SHORT_BREAK/60)) min"
+      echo "Long break: $(($LONG_BREAK/60)) min"
+      while true; do
+        for i in {1..3}; do
+            echo "Pomodoro #$((counter++)) ..."
+            pomodoro_step "Focus on: $NOTE" $WORK
+            beep &
+            pomodoro_step "Break! $NOTE" $SHORT_BREAK
+            beep &
+        done
+        echo "Pomodoro #$((counter++)) ..."
+        pomodoro_step "Focus on: $NOTE" $WORK
+        beep &
+        pomodoro_step "Break! $NOTE" $SHORT_BREAK
+        beep &
+        exit
+      done
+    else
+      pomodoro_step "Focus on: $NOTE" $WORK
+      beep &
+      pomodoro_step "Break!" 0
+      exit
+    fi
+    wait
+}
+
+if $VERBOSE; then
+  pomodoro_loop
+else
+  pomodoro_loop &>/dev/null &
+fi
